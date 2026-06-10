@@ -104,8 +104,14 @@ class Config:
     normalize_world_space: bool = True
     # Camera model
     camera_model: CameraModel = "pinhole"
-    # Load EXIF exposure metadata from images (if available)
-    load_exposure: bool = True
+    # Load EXIF exposure metadata from images (if available). Default False: pipeline extracts
+    # frames as PNG which strips EXIF; set True only when frames are JPEG with exposure data.
+    load_exposure: bool = False
+    # Skip point-track loading for faster startup (disables --depth-loss). Drop this flag to
+    # use depth supervision — sparse COLMAP anchors may help planar/low-texture surfaces.
+    fast_init: bool = False
+    # Directory of per-image binary masks (e.g. DA3-refined wall masks); None = disabled.
+    mask_dir: Optional[str] = None
 
     # --- NCore-specific options (only used when data_type="ncore") ---
     # Camera sensor IDs to load (auto-detected from sequence if empty)
@@ -441,6 +447,8 @@ class Runner:
                 normalize=cfg.normalize_world_space,
                 test_every=cfg.test_every,
                 load_exposure=cfg.load_exposure,
+                fast_init=cfg.fast_init,
+                mask_dir=cfg.mask_dir,
             )
             self.trainset = Dataset(
                 self.parser,
@@ -449,6 +457,11 @@ class Runner:
                 load_depths=cfg.depth_loss,
             )
             self.valset = Dataset(self.parser, split="val")
+            # Save COLMAP-world → training-space transform for external camera tools.
+            np.save(
+                os.path.join(cfg.result_dir, "colmap_to_ply_transform.npy"),
+                self.parser.transform.astype(np.float64),
+            )
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
         print("Scene scale:", self.scene_scale)
 

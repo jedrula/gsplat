@@ -25,7 +25,16 @@ import imageio.v2 as imageio
 import numpy as np
 import torch
 from PIL import Image
-from pycolmap import SceneManager
+try:
+    from pycolmap import SceneManager
+except ImportError:
+    class SceneManager:  # type: ignore[no-redef]
+        def __init__(self, *a, **kw):
+            raise RuntimeError(
+                "SceneManager not available in this pycolmap version. "
+                "Run with --fast-init, or install: "
+                "pip install git+https://github.com/rmbrualla/pycolmap@cc7ea4b7301720ac29287dbe450952511b32125e"
+            )
 from tqdm import tqdm
 from typing_extensions import assert_never
 

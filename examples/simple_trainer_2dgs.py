@@ -32,6 +32,7 @@ import tyro
 import viser
 from datasets.colmap import Dataset, Parser
 from datasets.traj import generate_interpolated_path
+from gsplat import export_splats
 from gsplat.losses import depth_l1_loss, l1_loss, ssim_loss
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
@@ -198,9 +199,18 @@ class Config:
     # Save training images to tensorboard
     tb_save_image: bool = False
 
+    # Export Gaussians as PLY at these steps (and always at the final step).
+    save_ply: bool = False
+    ply_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    # Skip point-track loading for faster startup (disables --depth-loss).
+    fast_init: bool = False
+    # Directory of per-image binary masks (e.g. DA3-refined wall masks); None = disabled.
+    mask_dir: Optional[str] = None
+
     def adjust_steps(self, factor: float):
         self.eval_steps = [int(i * factor) for i in self.eval_steps]
         self.save_steps = [int(i * factor) for i in self.save_steps]
+        self.ply_steps = [int(i * factor) for i in self.ply_steps]
         self.max_steps = int(self.max_steps * factor)
         self.sh_degree_interval = int(self.sh_degree_interval * factor)
         self.refine_start_iter = int(self.refine_start_iter * factor)
@@ -296,6 +306,8 @@ class Runner:
         os.makedirs(self.stats_dir, exist_ok=True)
         self.render_dir = f"{cfg.result_dir}/renders"
         os.makedirs(self.render_dir, exist_ok=True)
+        self.ply_dir = f"{cfg.result_dir}/point_cloud"
+        os.makedirs(self.ply_dir, exist_ok=True)
 
         # Tensorboard
         self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
@@ -306,6 +318,8 @@ class Runner:
             factor=cfg.data_factor,
             normalize=cfg.normalize_world_space,
             test_every=cfg.test_every,
+            fast_init=cfg.fast_init,
+            mask_dir=cfg.mask_dir,
         )
         self.trainset = Dataset(
             self.parser,
@@ -314,6 +328,10 @@ class Runner:
             load_depths=cfg.depth_loss,
         )
         self.valset = Dataset(self.parser, split="val")
+        np.save(
+            os.path.join(cfg.result_dir, "colmap_to_ply_transform.npy"),
+            self.parser.transform.astype(np.float64),
+        )
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
         print("Scene scale:", self.scene_scale)
 
@@ -763,6 +781,20 @@ class Runner:
                         "splats": self.splats.state_dict(),
                     },
                     f"{self.ckpt_dir}/ckpt_{step}.pt",
+                )
+
+            if (
+                step in [i - 1 for i in cfg.ply_steps] or step == max_steps - 1
+            ) and cfg.save_ply:
+                export_splats(
+                    means=self.splats["means"],
+                    scales=self.splats["scales"],
+                    quats=self.splats["quats"],
+                    opacities=self.splats["opacities"],
+                    sh0=self.splats["sh0"],
+                    shN=self.splats["shN"],
+                    format="ply",
+                    save_to=f"{self.ply_dir}/point_cloud_{step}.ply",
                 )
 
             # eval the full set

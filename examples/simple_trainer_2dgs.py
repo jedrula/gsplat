@@ -206,6 +206,8 @@ class Config:
     fast_init: bool = False
     # Directory of per-image binary masks (e.g. DA3-refined wall masks); None = disabled.
     mask_dir: Optional[str] = None
+    # Skip trajectory video rendering (requires imageio[ffmpeg]).
+    disable_video: bool = False
 
     def adjust_steps(self, factor: float):
         self.eval_steps = [int(i * factor) for i in self.eval_steps]
@@ -800,7 +802,8 @@ class Runner:
             # eval the full set
             if step in [i - 1 for i in cfg.eval_steps] or step == max_steps - 1:
                 self.eval(step)
-                self.render_traj(step)
+                if not cfg.disable_video:
+                    self.render_traj(step)
 
             if not cfg.disable_viewer:
                 self.viewer.lock.release()

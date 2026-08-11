@@ -17,6 +17,7 @@
 import json
 import math
 import os
+import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -449,6 +450,9 @@ class Runner:
                 load_exposure=cfg.load_exposure,
                 fast_init=cfg.fast_init,
                 mask_dir=cfg.mask_dir,
+                # depth loss supervises at track projections, so tracks must be read
+                # even under fast_init (official pycolmap has no SceneManager)
+                load_tracks=cfg.depth_loss,
             )
             self.trainset = Dataset(
                 self.parser,
@@ -861,7 +865,7 @@ class Runner:
 
         # Training loop.
         global_tic = time.time()
-        pbar = tqdm.tqdm(range(init_step, max_steps))
+        pbar = tqdm.tqdm(range(init_step, max_steps), file=sys.stderr)
         for step in pbar:
             if not cfg.disable_viewer:
                 while self.viewer.state == "paused":
@@ -1018,10 +1022,17 @@ class Runner:
 
             if world_rank == 0 and cfg.tb_every > 0 and step % cfg.tb_every == 0:
                 mem = torch.cuda.max_memory_allocated() / 1024**3
+                num_gs = len(self.splats["means"])
+                print(
+                    f"[train] step {step}/{cfg.max_steps}  loss={loss.item():.4f}  "
+                    f"l1={l1loss.item():.4f}  ssim={ssimloss.item():.4f}  "
+                    f"GS={num_gs}  mem={mem:.2f}GB",
+                    flush=True,
+                )
                 self.writer.add_scalar("train/loss", loss.item(), step)
                 self.writer.add_scalar("train/l1loss", l1loss.item(), step)
                 self.writer.add_scalar("train/ssimloss", ssimloss.item(), step)
-                self.writer.add_scalar("train/num_GS", len(self.splats["means"]), step)
+                self.writer.add_scalar("train/num_GS", num_gs, step)
                 self.writer.add_scalar("train/mem", mem, step)
                 if cfg.depth_loss:
                     self.writer.add_scalar("train/depthloss", depthloss.item(), step)

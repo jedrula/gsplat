@@ -131,6 +131,44 @@ def _load_colmap_fast(colmap_dir: str):
     return cameras, images, np.array(pts,np.float32), np.array(errs,np.float32), np.array(cols,np.uint8)
 
 
+def _load_colmap_tracks(colmap_dir: str):
+    """point_indices: image_name -> array of point3D INDICES (not ids).
+
+    The fast loader seeks past POINTS2D and the points3D track lists; this reads
+    them. Needed for --depth-loss, which supervises rendered depth at the
+    projections of each image's visible points. Dependency-free on purpose:
+    official pycolmap has no SceneManager, and installing the fork that does
+    would shadow the pycolmap the rest of our tooling uses.
+    """
+    import collections
+    id_to_idx, order = {}, []
+    with open(os.path.join(colmap_dir, "points3D.bin"), "rb") as f:
+        for i in range(struct.unpack("<Q", f.read(8))[0]):
+            pid = struct.unpack("<Q", f.read(8))[0]
+            id_to_idx[pid] = i
+            f.seek(24 + 3 + 8, os.SEEK_CUR)                       # xyz, rgb, error
+            f.seek(struct.unpack("<Q", f.read(8))[0] * 8, os.SEEK_CUR)  # track
+    per_image = collections.defaultdict(list)
+    with open(os.path.join(colmap_dir, "images.bin"), "rb") as f:
+        for _ in range(struct.unpack("<Q", f.read(8))[0]):
+            f.read(4)                                              # image_id
+            f.seek(8 * 4 + 8 * 3 + 4, os.SEEK_CUR)                 # qvec, tvec, camera_id
+            nb = bytearray()
+            while True:
+                c = f.read(1)
+                if c == b"\x00":
+                    break
+                nb.extend(c)
+            name = nb.decode("utf-8", errors="replace")
+            n2d = struct.unpack("<Q", f.read(8))[0]
+            for _ in range(n2d):
+                f.read(16)                                         # x, y
+                pid = struct.unpack("<q", f.read(8))[0]
+                if pid != -1 and pid in id_to_idx:
+                    per_image[name].append(id_to_idx[pid])
+    return {k: np.array(v, dtype=np.int32) for k, v in per_image.items()}
+
+
 def _get_rel_paths(path_dir: str) -> List[str]:
     """Recursively get relative paths of files in a directory."""
     paths = []
@@ -177,6 +215,7 @@ class Parser:
         load_exposure: bool = False,
         fast_init: bool = False,
         mask_dir: Optional[str] = None,
+        load_tracks: bool = False,
     ):
         self.data_dir = data_dir
         self.factor = factor
@@ -324,7 +363,14 @@ class Parser:
         # To use --depth-loss, run without --fast-init.
         if fast_init:
             points, points_err, points_rgb = _points, _points_err, _points_rgb
-            point_indices = {}
+            # fast_init normally means "no tracks", which silently disables depth
+            # loss. If the caller asked for depths, read the tracks anyway.
+            if load_tracks:
+                point_indices = _load_colmap_tracks(colmap_dir)
+                print(f"loaded tracks for {len(point_indices)} images "
+                      f"(depth loss enabled with fast-init)")
+            else:
+                point_indices = {}
         else:
             points = manager.points3D.astype(np.float32)
             points_err = manager.point3D_errors.astype(np.float32)

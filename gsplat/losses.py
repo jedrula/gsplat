@@ -215,8 +215,24 @@ def depth_l1_loss(
     Returns:
         Scalar disparity L1 loss.
     """
-    disp = torch.where(pred_depth > 0.0, 1.0 / pred_depth, torch.zeros_like(pred_depth))
-    disp_gt = torch.where(gt_depth > 0.0, 1.0 / gt_depth, torch.zeros_like(gt_depth))
+    # NaN-GRADIENT FIX (local patch). torch.where differentiates BOTH branches, so
+    # `1.0 / pred_depth` is differentiated even where pred_depth == 0 and the
+    # element is masked out of the loss value. One zero therefore yields a NaN
+    # gradient while the loss itself still looks finite and healthy.
+    #
+    # Rendered depth is exactly 0 wherever no gaussian covers a sampled point,
+    # which is what MCMC relocation creates at refine_start_iter. The NaN reaches
+    # the opacities, and MCMC's sigmoid(NaN) then trips
+    # "invalid multinomial distribution (probability entry < 0)".
+    #
+    # Sanitising the divisor keeps the loss value identical and makes the dead
+    # branch differentiate 1/1 instead of 1/0.
+    pred_ok = pred_depth > 0.0
+    gt_ok = gt_depth > 0.0
+    pred_safe = torch.where(pred_ok, pred_depth, torch.ones_like(pred_depth))
+    gt_safe = torch.where(gt_ok, gt_depth, torch.ones_like(gt_depth))
+    disp = torch.where(pred_ok, 1.0 / pred_safe, torch.zeros_like(pred_depth))
+    disp_gt = torch.where(gt_ok, 1.0 / gt_safe, torch.zeros_like(gt_depth))
     return F.l1_loss(disp, disp_gt) * scene_scale
 
 

@@ -63,8 +63,15 @@ def _multinomial_sample(weights: Tensor, n: int, replacement: bool = True) -> Te
     num_elements = weights.size(0)
 
     if num_elements <= 2**24:
-        # Use torch.multinomial for elements within the limit
-        return torch.multinomial(weights, n, replacement=replacement)
+        # torch.multinomial on CUDA intermittently raises "invalid configuration
+        # argument" for certain (num_samples, num_categories) sizes — a known
+        # PyTorch CUDA bug. Because a CUDA error corrupts the context (and is
+        # reported asynchronously, so a try/except at the call site can't reliably
+        # recover), sample on CPU instead. Relocation runs only periodically, so
+        # the host round-trip is negligible.
+        return torch.multinomial(
+            weights.cpu(), n, replacement=replacement
+        ).to(weights.device)
     else:
         # Fallback to numpy.random.choice for larger element spaces
         weights = weights / weights.sum()
@@ -311,6 +318,13 @@ def relocate(
     # Sample for new GSs
     eps = torch.finfo(torch.float32).eps
     probs = opacities[alive_indices].flatten()  # ensure its shape is [N,]
+    # Guard: if every gaussian is dead (empty alive set) or the alive opacities
+    # sum to <= 0, there is no valid distribution to relocate from — skip this
+    # relocation rather than crash in torch.multinomial. (Indicates the scene has
+    # collapsed to full transparency; usually a scene-scale / hyperparameter
+    # mismatch — feed gsplat a ~unit-normalized scene.)
+    if alive_indices.numel() == 0 or float(probs.sum()) <= 0.0:
+        return
     sampled_idxs = _multinomial_sample(probs, n, replacement=True)
     sampled_idxs = alive_indices[sampled_idxs]
     new_opacities, new_scales = compute_relocation(
